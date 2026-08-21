@@ -32,8 +32,16 @@ write_files:
     content: |
       if [ -n "${BASH_VERSION:-}" ] && [ -t 0 ] && [ -t 1 ] &&
          [ -x /usr/bin/zsh ] && [ ! -e "${HOME}/.disable-auto-zsh" ]; then
+        if [ ! -e "${HOME}/.zshrc" ]; then
+          (umask 077 && printf '%s\n' '# Per-user zsh customizations.' > "${HOME}/.zshrc")
+        fi
         exec /usr/bin/zsh -l
       fi
+  - path: /etc/skel/.zshrc
+    permissions: "0644"
+    defer: true
+    content: |
+      # Per-user zsh customizations.
   - path: /etc/zsh/zshrc
     permissions: "0644"
     defer: true
