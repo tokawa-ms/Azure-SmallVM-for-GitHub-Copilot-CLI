@@ -1,0 +1,351 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Deploys an Ubuntu VM for long-running GitHub Copilot CLI sessions with Microsoft Entra SSH and Defender for Servers JIT access."
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region. Japan East is recommended for users in Japan."
+      }
+    },
+    "vmName": {
+      "type": "string",
+      "defaultValue": "copilot-cli-vm",
+      "minLength": 1,
+      "maxLength": 64,
+      "metadata": {
+        "description": "Name of the virtual machine."
+      }
+    },
+    "vmSize": {
+      "type": "string",
+      "defaultValue": "Standard_B2als_v2",
+      "allowedValues": [
+        "Standard_B1ms",
+        "Standard_B2als_v2",
+        "Standard_B2s",
+        "Standard_B2as_v2"
+      ],
+      "metadata": {
+        "description": "VM size. Standard_B2als_v2 (2 vCPU, 4 GiB) is recommended."
+      }
+    },
+    "adminUsername": {
+      "type": "string",
+      "defaultValue": "azureuser",
+      "metadata": {
+        "description": "Break-glass local administrator. Password authentication is disabled."
+      }
+    },
+    "adminSshPublicKey": {
+      "type": "string",
+      "metadata": {
+        "description": "Break-glass SSH public key. Never provide a private key."
+      }
+    },
+    "entraPrincipalId": {
+      "type": "string",
+      "metadata": {
+        "description": "Object ID of the Microsoft Entra user or group allowed to sign in."
+      }
+    },
+    "entraPrincipalType": {
+      "type": "string",
+      "defaultValue": "User",
+      "allowedValues": [
+        "User",
+        "Group"
+      ],
+      "metadata": {
+        "description": "Type of the Microsoft Entra principal."
+      }
+    },
+    "vmLoginRole": {
+      "type": "string",
+      "defaultValue": "Administrator",
+      "allowedValues": [
+        "Administrator",
+        "User"
+      ],
+      "metadata": {
+        "description": "Administrator permits sudo; User provides non-privileged VM access."
+      }
+    },
+    "osDiskSizeGB": {
+      "type": "int",
+      "defaultValue": 64,
+      "allowedValues": [
+        32,
+        64,
+        128
+      ],
+      "metadata": {
+        "description": "OS disk size in GiB."
+      }
+    },
+    "jitMaxRequestAccessDuration": {
+      "type": "string",
+      "defaultValue": "PT1H",
+      "allowedValues": [
+        "PT1H",
+        "PT2H",
+        "PT3H"
+      ],
+      "metadata": {
+        "description": "Maximum duration of each JIT SSH access request."
+      }
+    }
+  },
+  "variables": {
+    "vnetName": "[format('{0}-vnet', parameters('vmName'))]",
+    "subnetName": "vm",
+    "nsgName": "[format('{0}-nsg', parameters('vmName'))]",
+    "publicIpName": "[format('{0}-pip', parameters('vmName'))]",
+    "nicName": "[format('{0}-nic', parameters('vmName'))]",
+    "adminLoginRoleDefinitionId": "1c0163c0-47e6-4577-8991-ea5c82e286e4",
+    "userLoginRoleDefinitionId": "fb879df8-f326-4884-b1cf-06f3ad86be52",
+    "selectedLoginRoleDefinitionId": "[if(equals(parameters('vmLoginRole'), 'Administrator'), variables('adminLoginRoleDefinitionId'), variables('userLoginRoleDefinitionId'))]",
+    "roleAssignmentName": "[guid(resourceGroup().id, parameters('vmName'), parameters('entraPrincipalId'), parameters('vmLoginRole'))]",
+    "cloudInit": "#cloud-config\npackage_update: true\npackage_upgrade: false\n\npackages:\n  - bat\n  - build-essential\n  - ca-certificates\n  - curl\n  - fzf\n  - git\n  - jq\n  - language-pack-ja\n  - locales\n  - python3\n  - python3-pip\n  - python3-venv\n  - ripgrep\n  - tig\n  - tmux\n  - unzip\n  - zip\n  - zoxide\n  - zsh\n  - zsh-autosuggestions\n  - zsh-syntax-highlighting\n\nwrite_files:\n  - path: /etc/profile.d/prefer-zsh.sh\n    permissions: \"0644\"\n    defer: true\n    content: |\n      if [ -n \"${BASH_VERSION:-}\" ] && [ -t 0 ] && [ -t 1 ] &&\n         [ -x /usr/bin/zsh ] && [ ! -e \"${HOME}/.disable-auto-zsh\" ]; then\n        exec /usr/bin/zsh -l\n      fi\n  - path: /etc/zsh/zshrc\n    permissions: \"0644\"\n    defer: true\n    content: |\n      export ZSH=/opt/oh-my-zsh\n      ZSH_THEME=\"agnoster\"\n      plugins=(git sudo extract colored-man-pages command-not-found)\n      DISABLE_AUTO_UPDATE=\"true\"\n      DISABLE_UPDATE_PROMPT=\"true\"\n      source \"${ZSH}/oh-my-zsh.sh\"\n\n      HISTFILE=\"${ZDOTDIR:-${HOME}}/.zsh_history\"\n      HISTSIZE=50000\n      SAVEHIST=50000\n      setopt EXTENDED_HISTORY\n      setopt APPEND_HISTORY\n      setopt INC_APPEND_HISTORY\n      setopt HIST_IGNORE_ALL_DUPS\n      setopt HIST_REDUCE_BLANKS\n      setopt HIST_VERIFY\n\n      if command -v fzf >/dev/null 2>&1; then\n        [ -r /usr/share/doc/fzf/examples/key-bindings.zsh ] &&\n          source /usr/share/doc/fzf/examples/key-bindings.zsh\n        [ -r /usr/share/doc/fzf/examples/completion.zsh ] &&\n          source /usr/share/doc/fzf/examples/completion.zsh\n      fi\n      command -v zoxide >/dev/null 2>&1 && eval \"$(zoxide init zsh)\"\n      [ -r /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ] &&\n        source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh\n\n      alias g=\"git\"\n      alias gst=\"git status --short --branch\"\n      alias gl=\"git log --graph --decorate --oneline --all\"\n      alias t=\"tig\"\n      alias ta=\"tmux attach -t\"\n      alias tls=\"tmux list-sessions\"\n      alias cpl=\"copilot\"\n      alias ll=\"ls -alF\"\n      command -v batcat >/dev/null 2>&1 && alias bat=\"batcat\"\n\n      # Syntax highlighting must be sourced after all other zsh plugins.\n      [ -r /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] &&\n        source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh\n  - path: /etc/motd\n    permissions: \"0644\"\n    content: |\n      GitHub Copilot CLI VM\n\n      Check provisioning:\n        cloud-init status --wait\n        cat /var/log/copilot-vm-init.log\n\n      Authenticate:\n        copilot login\n\n      Start a durable session:\n        tmux new -s copilot\n        copilot\n\nruncmd:\n  - [bash, -lc, \"install -m 0644 /dev/null /var/log/copilot-vm-init.log\"]\n  - [bash, -lc, \"set -o pipefail; locale-gen ja_JP.UTF-8 2>&1 | tee -a /var/log/copilot-vm-init.log\"]\n  - [bash, -lc, \"update-locale LANG=ja_JP.UTF-8 LC_CTYPE=ja_JP.UTF-8\"]\n  - [bash, -lc, \"set -o pipefail; git clone --filter=blob:none https://github.com/ohmyzsh/ohmyzsh.git /opt/oh-my-zsh 2>&1 | tee -a /var/log/copilot-vm-init.log\"]\n  - [bash, -lc, \"set -o pipefail; git -C /opt/oh-my-zsh checkout --detach d42209f2afa8ec3e6971e5b4695ff27f9d5670d2 2>&1 | tee -a /var/log/copilot-vm-init.log\"]\n  - [bash, -lc, \"test \\\"$(git -C /opt/oh-my-zsh rev-parse HEAD)\\\" = d42209f2afa8ec3e6971e5b4695ff27f9d5670d2\"]\n  - [bash, -lc, \"set -o pipefail; curl -fsSL https://gh.io/copilot-install | bash 2>&1 | tee -a /var/log/copilot-vm-init.log\"]\n  - [bash, -lc, \"copilot --version 2>&1 | tee -a /var/log/copilot-vm-init.log\"]\n  - [bash, -lc, \"date --iso-8601=seconds | tee /var/lib/cloud/instance/copilot-vm-ready\"]\n\nfinal_message: \"GitHub Copilot CLI VM initialization completed after $UPTIME seconds.\"\n"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('nsgName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "securityRules": []
+      },
+      "metadata": {
+        "description": "No permanent public inbound rules. Defender for Servers JIT creates temporary SSH rules."
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+      ],
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "10.42.0.0/16"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[variables('subnetName')]",
+            "properties": {
+              "addressPrefix": "10.42.0.0/24",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('publicIpName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard",
+        "tier": "Regional"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "publicIPAddressVersion": "IPv4",
+        "deleteOption": "Delete"
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('nicName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "subnet": {
+                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName'))]",
+                "properties": {
+                  "deleteOption": "Delete"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-11-01",
+      "name": "[parameters('vmName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmSize')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "Canonical",
+            "offer": "ubuntu-24_04-lts",
+            "sku": "server",
+            "version": "latest"
+          },
+          "osDisk": {
+            "name": "[format('{0}-osdisk', parameters('vmName'))]",
+            "createOption": "FromImage",
+            "deleteOption": "Delete",
+            "diskSizeGB": "[parameters('osDiskSizeGB')]",
+            "managedDisk": {
+              "storageAccountType": "StandardSSD_LRS"
+            }
+          }
+        },
+        "osProfile": {
+          "computerName": "[parameters('vmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "customData": "[base64(variables('cloudInit'))]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": true,
+            "provisionVMAgent": true,
+            "patchSettings": {
+              "patchMode": "ImageDefault",
+              "assessmentMode": "ImageDefault"
+            },
+            "ssh": {
+              "publicKeys": [
+                {
+                  "path": "[format('/home/{0}/.ssh/authorized_keys', parameters('adminUsername'))]",
+                  "keyData": "[parameters('adminSshPublicKey')]"
+                }
+              ]
+            }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]",
+              "properties": {
+                "deleteOption": "Delete"
+              }
+            }
+          ]
+        },
+        "securityProfile": {
+          "securityType": "TrustedLaunch",
+          "uefiSettings": {
+            "secureBootEnabled": true,
+            "vTpmEnabled": true
+          }
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/extensions",
+      "apiVersion": "2024-11-01",
+      "name": "[format('{0}/AADSSHLoginForLinux', parameters('vmName'))]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', parameters('vmName'))]"
+      ],
+      "properties": {
+        "publisher": "Microsoft.Azure.ActiveDirectory",
+        "type": "AADSSHLoginForLinux",
+        "typeHandlerVersion": "1.0",
+        "autoUpgradeMinorVersion": true,
+        "enableAutomaticUpgrade": true
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[variables('roleAssignmentName')]",
+      "scope": "[format('Microsoft.Compute/virtualMachines/{0}', parameters('vmName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', parameters('vmName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('selectedLoginRoleDefinitionId'))]",
+        "principalId": "[parameters('entraPrincipalId')]",
+        "principalType": "[parameters('entraPrincipalType')]"
+      }
+    },
+    {
+      "type": "Microsoft.Security/locations/jitNetworkAccessPolicies",
+      "apiVersion": "2020-01-01",
+      "name": "[format('{0}/default', parameters('location'))]",
+      "kind": "Basic",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', parameters('vmName'))]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+      ],
+      "properties": {
+        "virtualMachines": [
+          {
+            "id": "[resourceId('Microsoft.Compute/virtualMachines', parameters('vmName'))]",
+            "ports": [
+              {
+                "number": 22,
+                "protocol": "TCP",
+                "allowedSourceAddressPrefix": "*",
+                "maxRequestAccessDuration": "[parameters('jitMaxRequestAccessDuration')]"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "vmResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Compute/virtualMachines', parameters('vmName'))]"
+    },
+    "publicIpAddress": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName')), '2024-05-01').ipAddress]"
+    },
+    "entraSshCommand": {
+      "type": "string",
+      "value": "[format('az ssh vm --resource-group \"{0}\" --name \"{1}\"', resourceGroup().name, parameters('vmName'))]"
+    },
+    "jitReminder": {
+      "type": "string",
+      "value": "Request JIT access for TCP/22 from My IP before running the SSH command."
+    }
+  }
+}
