@@ -12,7 +12,7 @@
 Microsoft Entra ID で SSH ログインし、GitHub Copilot CLI を長時間実行するための
 小規模な Azure Linux VM をデプロイします。
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Ftokawa-ms%2Fazure-copilot-cli-vm%2Fmain%2Fazuredeploy.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Ftokawa-ms%2FAzure-SmallVM-for-GitHub-Copilot-CLI%2Fmain%2Fazuredeploy.json)
 
 ## Highlights
 
